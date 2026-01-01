@@ -32,41 +32,94 @@ IBM MQ Assistant Bot revolutionizes the way you interact with IBM MQ infrastruct
 
 ## 🏗️ Architecture
 
-This bot is part of a **three-tier AI-powered MQ management system**:
+This bot is part of a **multi-tier AI-powered MQ management system**:
 
 ```
 ┌─────────────────────────┐
-│   MQ Assistant Bot      │  ← You are here! (Frontend + Orchestration)
-│   (Streamlit UI)        │
-└───────────┬─────────────┘
+│   MQ Assistant Bot      │  ← You are here! (Streamlit UI)
+│   (This Repo)           │     • User interface
+└───────────┬─────────────┘     • LLM integration
+            │
+            ↓
+┌─────────────────────────┐
+│         LLM             │  ← AI Analysis
+│   (Llama 3.1/Ollama)    │     • Analyzes questions
+└───────────┬─────────────┘     • Determines MCP tool calls
+            │ MCP Protocol
+            ↓
+┌─────────────────────────┐
+│     MQ-MCP Repo         │  ← MCP Server
+│   (MCP Tools)           │     • Implements MCP tools
+└───────────┬─────────────┘     • Calls FastAPI
             │ HTTP
             ↓
 ┌─────────────────────────┐
-│  mcp-ollama-bridge      │  ← LLM Interaction Layer
-│  (FastAPI)              │     • Processes natural language
-└───────────┬─────────────┘     • Determines tool calls
-            │ MCP                • Formats responses
+│   fastapi-app Repo      │  ← REST API Wrapper
+│     (FastAPI)           │     • Wraps IBM MQ REST API
+└───────────┬─────────────┘     • Handles authentication
+            │ HTTP/REST
             ↓
 ┌─────────────────────────┐
-│      MQ-MCP             │  ← MQ Integration Layer
-│  (MCP Server)           │     • Executes MQ commands
-└─────────────────────────┘     • Returns structured data
+│   IBM MQ REST API       │  ← IBM MQ REST Interface
+└───────────┬─────────────┘
+            │
+            ↓
+┌─────────────────────────┐
+│  Queue Manager Infra    │  ← Actual IBM MQ
+│   (SRVIG, etc.)         │     • Queue Managers
+└─────────────────────────┘     • Queues & Channels
 ```
 
 ### 🔗 Dependencies
 
 This bot requires two additional repositories to be running:
 
-1. **[MQ-MCP](https://github.com/yourusername/MQ-MCP)** - MCP server that interfaces directly with IBM MQ
-   - Executes actual MQ commands (MQSC, PCF)
-   - Returns structured queue, channel, and qmgr data
-   - Must be running and accessible
+1. **[MQ-MCP](https://github.com/vignesh1988i/MQ-MCP)** - MCP Server for IBM MQ
+   - Implements MCP tools (list_queues, get_qmgr_status, etc.)
+   - Called by LLM via MCP protocol
+   - Makes HTTP calls to fastapi-app for MQ operations
+   - Must be running and properly configured
 
-2. **[fastapi-app](https://github.com/yourusername/fastapi-app)** (mcp-ollama-bridge) - The AI brain
-   - Hosts the LLM (Llama 3.1 via Ollama)
-   - Translates natural language to MCP tool calls
-   - Formats LLM responses for the UI
-   - Must be running on the configured bridge URL
+2. **[fastapi-app](https://github.com/vignesh1988i/fastapi-app)** - REST API Wrapper
+   - Wraps IBM MQ REST API with simplified endpoints
+   - Called by MQ-MCP tools via HTTP
+   - Handles IBM MQ REST API authentication and requests
+   - Must be running and configured with IBM MQ REST API credentials
+
+---
+
+## ⚡ Startup Order
+
+**IMPORTANT:** Components must be started in this specific order for the bot to function properly:
+
+```
+1️⃣  IBM Queue Manager (QMGR)
+    └─ Your IBM MQ infrastructure must be running
+    └─ Queue managers (e.g., SRVIG) must be active
+    └─ Verify: dspmq command shows RUNNING status
+
+2️⃣  MQWEB Server
+    └─ IBM MQ REST API server must be started
+    └─ Provides REST endpoints for MQ operations
+    └─ Verify: Access https://localhost:9443/ibmmq/console
+
+3️⃣  FastAPI Application (fastapi-app)
+    └─ Start the FastAPI wrapper service
+    └─ Connects to IBM MQ REST API
+    └─ Verify: curl http://localhost:<port>/health
+
+4️⃣  MCP Ollama Bridge (MQ-MCP)
+    └─ Start the MCP server
+    └─ Connects to FastAPI for MQ data
+    └─ Verify: Check MCP server logs for "running"
+
+5️⃣  MQ Assistant Bot (This Application)
+    └─ Finally, start this Streamlit application
+    └─ Run: streamlit run app.py
+    └─ Access: http://localhost:8501
+```
+
+**⚠️ If components are not started in order, you may experience connection errors or tool execution failures.**
 
 ---
 
@@ -78,12 +131,12 @@ This bot requires two additional repositories to be running:
 - Running instance of **MQ-MCP** server
 - Running instance of **fastapi-app** (mcp-ollama-bridge)
 - IBM MQ environment (for MQ-MCP to connect to)
-
-### Installation
+wraps IBM MQ REST API)
+- IBM MQ environment with REST API enabled
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/mq-assistant-bot.git
+   git clone https://github.com/vignesh1988i/mq-assistant-bot.git
    cd mq-assistant-bot
    ```
 
@@ -155,8 +208,8 @@ Bot: Here are the SYSTEM queues in SRVIG: ...
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MCP_BRIDGE_URL` | `http://localhost:8090/api/chat` | URL of the mcp-ollama-bridge (FastAPI app) |
-| `LLM_MODEL` | `llama3.1:8b` | LLM model to use (configured in bridge) |
+| `MCP_BRIDGE_URL` | `http://localhost:8090/api/chat` | URL endpoint for LLM communication |
+| `LLM_MODEL` | `llama3.1:8b` | LLM model to use via Ollama |
 | `SESSION_TIMEOUT_MINUTES` | `30` | Session inactivity timeout |
 | `MAX_CONVERSATION_HISTORY` | `10` | Maximum messages to keep in history |
 
@@ -164,18 +217,17 @@ Bot: Here are the SYSTEM queues in SRVIG: ...
 
 ## 🔄 How It Works
 
-### The mcp-ollama-bridge Connection
-
-The **mcp-ollama-bridge** is where the AI magic happens:
+### The Complete Flow
 
 1. **You ask a question** → "How many queues are in SRVIG?"
-2. **Bot sends to bridge** → HTTP request to `/api/chat` endpoint
-3. **Bridge consults LLM** → Llama 3.1 understands the intent
-4. **LLM determines tools** → Needs to call `list_queues` with qmgr=SRVIG
-5. **Bridge calls MQ-MCP** → Executes the MCP tool via protocol
-6. **MQ-MCP queries IBM MQ** → Gets actual queue data
-7. **Bridge formats response** → LLM creates natural language answer
-8. **Bot displays result** → "SRVIG has 45 queues: DEV.QUEUE.1, ..."
+2. **Streamlit UI captures** → Sends to embedded LLM
+3. **LLM analyzes** → Llama 3.1 understands the intent
+4. **LLM determines MCP tools** → Needs to call `list_queues` with qmgr=SRVIG
+5. **MCP tool executes** → MQ-MCP receives the tool call via MCP protocol
+6. **MQ-MCP calls FastAPI** → HTTP request to fastapi-app endpoints
+7. **FastAPI calls IBM MQ REST API** → Gets actual queue data from MQ
+8. **Data flows back** → IBM MQ → fastapi-app → MQ-MCP → LLM formats response
+9. **Bot displays result** → "SRVIG has 45 queues: DEV.QUEUE.1, ..."
 
 ### Session Management
 
@@ -204,19 +256,20 @@ mq-assistant-bot/
 ## 🐛 Troubleshooting
 
 ### Bot shows "Connection Error"
-- Ensure **fastapi-app** (mcp-ollama-bridge) is running on the configured URL
-- Check `MCP_BRIDGE_URL` in your `.env` file
-- Verify bridge is accessible: `curl http://localhost:8090/health`
+- Ensure **fastapi-app** is running on the configured URL
+- Check `LLM (Ollama with Llama 3.1) is running and accessible
+- Check if MQ-MCP server is running
+- Verify MCP protocol connectivity
 
-### Bridge returns "Tool execution failed"
-- Ensure **MQ-MCP** server is running and accessible
-- Check MQ-MCP server logs for connection errors
-- Verify IBM MQ environment is accessible to MQ-MCP
+### MCP tool execution fails
+- Ensure **fastapi-app** is running
+- Check fastapi-app logs for HTTP errors
+- Verify fastapi-appREST API credentials and connectivity
 
 ### LLM responses are slow
-- LLM inference happens on the bridge side
+- LLM inference happens locally via Ollama
 - Consider using a smaller model (e.g., `llama3.1:7b`)
-- Check bridge server resources (CPU/GPU)
+- Check system resources (CPU/GPU/Memory)
 
 ---
 
